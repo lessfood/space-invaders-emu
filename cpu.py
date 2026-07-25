@@ -26,14 +26,11 @@ def fetch_byte():
 
 
 # <-- MOV Instruction Family -->
+# A MOV instruction has the bit pattern 01DDDSSS, where DDD is the destination register code and SSS is the source register code.
 
 def mov_reg_to_reg(opcode):
     """
     Moves the value from one register to another.
-    The opcode format is as follows:
-    7 6 5 4 3 2 1 0
-    | 0 1 1 1 d d d s s s |
-    where ddd is the destination register code and sss is the source register code.
     """
     ddd = (opcode >> 3) & 0b111  # Destination register code
     sss = opcode & 0b111         # Source register code
@@ -80,3 +77,94 @@ def reg_to_mem(opcode):
 
     # Store the value in memory at the address pointed to by HL
     ram[hl_address] = value
+
+
+# <-- Flag Operations -->
+
+def set_or_clear_flag(flags, mask, condition):
+    """
+    Sets or clears a specific flag in the flags byte based on the condition.
+    :param flags: The current flags byte.
+    :param mask: The bitmask for the specific flag to set or clear.
+    :param condition: If True, set the flag; if False, clear the flag.
+    :return: The updated flags byte.
+    """
+    if condition:
+        return flags | mask & 0xFF  # Set the flag
+    else:
+        return flags & ~mask & 0xFF  # Clear the flag
+
+def update_zsp_flags(flags, value):
+    """
+    Updates the Zero, Sign, and Parity flags based on the given value.
+    :param value: The value to check for flag updates.
+    :param flags: The current flags byte.
+    :return: The updated flags byte.
+    """
+    # Update Zero flag (bit 6)
+    flags = set_or_clear_flag(flags, 0b01000000, value == 0)
+
+    # Update Sign flag (bit 7)
+    flags = set_or_clear_flag(flags, 0b10000000, (value & 0x80) != 0)
+
+    # Update Parity flag (bit 2)
+    parity = value.bit_count() % 2 == 0
+    flags = set_or_clear_flag(flags, 0b00000100, parity)
+    return flags
+
+def inr(opcode):
+    """
+    Increments the value of a register or memory location by 1.
+    Updates the Zero, Sign, and Parity flags based on the result.
+    """
+    global flags
+    ddd = (opcode >> 3) & 0b111  # Destination register code
+
+    if ddd == 0b110:  # If destination is M (memory at HL)
+        hl_address = get_hl_address()
+        value = ram[hl_address]
+        value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
+        ram[hl_address] = value
+    else:
+        value = registers[CODE_TO_INDEX[ddd]]
+        value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
+        registers[CODE_TO_INDEX[ddd]] = value
+
+    # Update flags based on the new value
+    flags = update_zsp_flags(flags, value)
+
+def dcr(opcode):
+    """
+    Decrements the value of a register or memory location by 1.
+    Updates the Zero, Sign, and Parity flags based on the result.
+    """
+    global flags
+    ddd = (opcode >> 3) & 0b111  # Destination register code
+
+    if ddd == 0b110:  # If destination is M (memory at HL)
+        hl_address = get_hl_address()
+        value = ram[hl_address]
+        value = (value - 1) & 0xFF  # Decrement and wrap around at 8 bits
+        ram[hl_address] = value
+    else:
+        value = registers[CODE_TO_INDEX[ddd]]
+        value = (value - 1) & 0xFF  # Decrement and wrap around at 8 bits
+        registers[CODE_TO_INDEX[ddd]] = value
+
+    # Update flags based on the new value
+    flags = update_zsp_flags(flags, value)
+
+def mvi(opcode):
+    """
+    Moves an immediate value into a register or memory location.
+    The immediate value is fetched from the next byte in RAM.
+    """
+    
+    ddd = (opcode >> 3) & 0b111  # Destination register code
+    immediate_value = fetch_byte()  # Fetch the immediate value from the next byte in RAM
+
+    if ddd == 0b110:  # If destination is M (memory at HL)
+        hl_address = get_hl_address()
+        ram[hl_address] = immediate_value
+    else:
+        registers[CODE_TO_INDEX[ddd]] = immediate_value
