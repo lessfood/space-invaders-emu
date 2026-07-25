@@ -292,7 +292,7 @@ def adc(opcode):
 
 def sub(opcode):
     """
-    Adds the values of a source register (or memory address), and register A while storing a carry value and auxiliary carry value in their corresponding flags.
+    Subtracts the values of a source register (or memory address), and register A while storing a carry value and auxiliary carry value in their corresponding flags.
     """
     global flags
     sss = opcode & 0b111 # Source register code
@@ -434,3 +434,242 @@ def cmp(opcode):
     flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
     flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
     flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def adi(opcode):
+
+    """
+    Adds the values of the immediate value in the program counter, and register A while storing a carry value and auxiliary carry value in their corresponding flags.
+    """
+    global flags
+    immediate_value = fetch_byte() # get immediate value from program counter
+
+    # Perform the addition with the accumulator (register A)
+    total = registers[0] + immediate_value
+    result = total & 0xFF  # Keep only the lower 8 bits
+
+    carry = total > 0xFF  # Check if there was a carry out of the 8-bit range
+    aux_carry = ((registers[0] & 0x0F) + (immediate_value & 0x0F)) > 0x0F  # Check for auxiliary carry
+
+    registers[0] = result  # Store the result back in the accumulator (register A)
+
+    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def aci(opcode):
+    """
+    Adds the values of the immediate value of the program counter, the carry flag, and register A while storing a carry value and auxiliary carry value in their corresponding flags.
+    """
+    global flags
+    immediate_value = fetch_byte() # immediate value of pc
+
+    carry_in = flags & 0x01
+
+    # Perform the addition with the accumulator (register A) and carry
+    total = registers[0] + immediate_value + carry_in
+    result = total & 0xFF  # Keep only the lower 8 bits
+
+    carry = total > 0xFF  # Check if there was a carry out of the 8-bit range
+    aux_carry = ((registers[0] & 0x0F) + (immediate_value & 0x0F) + carry_in) > 0x0F  # Check for auxiliary carry
+
+    registers[0] = result  # Store the result back in the accumulator (register A)
+
+    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def sui(opcode):
+    """
+    Subtracts the values of the immediate value of the program counter, and register A while storing a carry value and auxiliary carry value in their corresponding flags.
+    """
+    global flags
+    immediate_value = fetch_byte()
+
+    total = registers[0] - immediate_value
+    result = total & 0xFF # Keep only lower 8 bits
+
+    carry = registers[0] < immediate_value # Check if there was a carry out of the 8-bit range
+    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F)) < 0 # Check for auxiliary carry
+
+    registers[0] = result  # Store the result back in the accumulator (register A)
+
+    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def sbi(opcode):
+    """
+    Subtracts the values of the immediate value of the program counter, the carry flag, and register A while storing a carry value and auxiliary carry value in their corresponding flags.
+    """
+    global flags
+    immediate_value = fetch_byte()
+
+    borrow_in = flags & 0x01
+
+    # Perform the subtraction with the accumulator (register A) and carry
+    total = registers[0] - immediate_value - borrow_in
+    result = total & 0xFF  # Keep only the lower 8 bits
+
+    carry = total < 0  # Check if there was a carry out of the 8-bit range
+    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F) - borrow_in) < 0  # Check for auxiliary carry
+
+    registers[0] = result  # Store the result back in the accumulator (register A)
+
+    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def ani(opcode):
+    """
+    Performs a bitwise AND using the the immediate value of the program counter, and register A while storing a carry value and auxiliary carry value in their corresponding flags.
+    """
+    global flags
+    immediate_value = fetch_byte()
+
+    carry = False # carry is always false
+    result = registers[0] & immediate_value # bitwise and
+
+    aux_carry = ((registers[0] | immediate_value) & 0x08) != 0 # bit 3 quirk
+
+    registers[0] = result  # Store the result back in the accumulator (register A)
+
+    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def xri(opcode):
+    """
+    Performs a bitwise XOR using the immediate value of the program counter, and register A while storing a carry value and auxiliary carry value in their corresponding flags.
+    """
+    global flags
+    immediate_value = fetch_byte()
+
+    
+    result = registers[0] ^ immediate_value # bitwise XOR
+
+    carry = False # always false
+    aux_carry = False # same here
+
+    registers[0] = result  # Store the result back in the accumulator (register A)
+
+    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def ori(opcode):
+    """
+    Performs a bitwise OR using the immediate value of the program counter, the carry flag, and register A while storing a carry value and auxiliary carry value in their corresponding flags.
+    """
+    global flags
+    immediate_value = fetch_byte()
+
+    
+    result = registers[0] | immediate_value # bitwise OR
+
+    carry = False # always false
+    aux_carry = False # same here
+
+    registers[0] = result  # Store the result back in the accumulator (register A)
+
+    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def cpi(opcode):
+    """
+    Compares the values of the immediate value of the program counter, and register A while storing a carry value and auxiliary carry value in their corresponding flags.
+    """
+    global flags
+    immediate_value = fetch_byte()
+
+    total = registers[0] - immediate_value
+    result = total & 0xFF # Keep only lower 8 bits
+
+    carry = registers[0] < immediate_value # Check if there was a carry out of the 8-bit range
+    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F)) < 0 # Check for auxiliary carry
+
+
+    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def daa(opcode):
+
+    """
+    Corrects the 8-bit binary value in the accumulator after an addition operation.
+    """
+
+    global flags
+
+    aux_carry = False
+    carry = False
+
+    result = registers[0]
+
+    # Step 1
+    if ((registers[0] & 0x0F) > 9) or ((flags & 0b00010000) != 0):
+        total = registers[0] + 0x06
+        result = total & 0xFF
+        registers[0] = result
+        aux_carry = True
+
+    # Step 2
+    if (((registers[0] & 0xF0) >> 4) > 9) or ((flags & 0x01) != 0):
+        total = registers[0] + 0x60
+        result = total & 0xFF
+        registers[0] = result
+        carry = True
+
+    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
+def cma(opcode):
+    """
+    Complements (inverts) the accumulator (register A). No flags are affected.
+    """
+    registers[0] = ~registers[0] & 0xFF
+
+def stc(opcode):
+    """
+    Forces the Carry flag to 1.
+    """
+    global flags
+    flags = set_or_clear_flag(flags, 0x01, True)
+
+def cmc(opcode):
+    """
+    Flips the Carry flag.
+    """
+    global flags
+    carry = (flags & 0x01) == 0
+    flags = set_or_clear_flag(flags, 0x01, carry)
+
+def dad(opcode):
+    """
+    Adds a 16-bit register pair (or SP) into the HL register pair.
+    Only the Carry flag is affected — Z/S/P/AC are untouched.
+    """
+    global flags
+    rp_code = (opcode >> 4) & 0b11  # Register pair code
+
+    hl_value = get_hl_address()  # Current 16-bit value of HL
+
+    if rp_code == 0b11:  # If register pair is SP (Stack Pointer)
+        value = sp  # Just reading, no need for `global sp` here
+    else:
+        high_index, low_index = RP_CODE_TO_INDEX[rp_code]
+        low_byte = registers[low_index]
+        high_byte = registers[high_index]
+        value = (high_byte << 8) | low_byte  # Combine into one 16-bit value
+
+    total = hl_value + value
+    result = total & 0xFFFF  # Keep only the lower 16 bits
+
+    carry = total > 0xFFFF  # Check if there was a carry out of the 16-bit range
+
+    # Split the 16-bit result back into H and L
+    registers[6] = result & 0xFF          # L = low byte
+    registers[5] = (result >> 8) & 0xFF   # H = high byte
+
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag only — no Z/S/P/AC
