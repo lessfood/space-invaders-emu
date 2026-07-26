@@ -5,8 +5,9 @@ ports = bytearray(256) # 256 seperate ports for interacting with actual "hardwar
 registers = bytearray(7)  # 7 registers: A, B, C, D, E, H, L
 # pairs: b/c, d/e, h/l
 
-flags = 0x00 # a single byte (plain int, masked & 0xFF), with bit-level check/set/clear operations at specific positions 
+flags = 0x02 # a single byte (plain int, masked & 0xFF), with bit-level check/set/clear operations at specific positions 
 # (Sign=7, Zero=6, AC=4, Parity=2, Carry=0)
+# 8080 quirk, bit 1 is always on
 
 pc = 0x0000  # Program Counter (16-bit); masked & 0xFFFF
 # starts at 0x0000, but can be set to any address in the 64KB address space
@@ -130,18 +131,24 @@ def inr(opcode):
     global flags
     ddd = (opcode >> 3) & 0b111  # Destination register code
 
+    
+
     if ddd == 0b110:  # If destination is M (memory at HL)
         hl_address = get_hl_address()
         value = ram[hl_address]
+        aux_carry = ((value & 0x0F) + 0x01) > 0x0F
         value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
         ram[hl_address] = value
     else:
         value = registers[CODE_TO_INDEX[ddd]]
+        aux_carry = ((value & 0x0F) + 0x01) > 0x0F
         value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
         registers[CODE_TO_INDEX[ddd]] = value
 
+
     # Update flags based on the new value
     flags = update_zsp_flags(flags, value)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
 
 def dcr(opcode):
     """
@@ -151,18 +158,24 @@ def dcr(opcode):
     global flags
     ddd = (opcode >> 3) & 0b111  # Destination register code
 
+
     if ddd == 0b110:  # If destination is M (memory at HL)
         hl_address = get_hl_address()
         value = ram[hl_address]
+        aux_carry = ((value & 0x0F) - 0x01) < 0
         value = (value - 1) & 0xFF  # Decrement and wrap around at 8 bits
         ram[hl_address] = value
     else:
         value = registers[CODE_TO_INDEX[ddd]]
+        aux_carry = ((value & 0x0F) - 0x01) < 0
         value = (value - 1) & 0xFF  # Decrement and wrap around at 8 bits
         registers[CODE_TO_INDEX[ddd]] = value
 
+
     # Update flags based on the new value
     flags = update_zsp_flags(flags, value)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
 
 def mvi(opcode):
     """
@@ -1106,7 +1119,7 @@ def hlt(opcode):
 
     halted = True
 
-def EI(opcode):
+def ei(opcode):
     """
     Enables interrupts
     """
@@ -1114,10 +1127,172 @@ def EI(opcode):
 
     interrupts_enabled = True
 
-def DI(opcode):
+def di(opcode):
     """
     Disables interrupts
     """
     global interrupts_enabled
 
     interrupts_enabled = False
+
+# <-- Exchange -->
+
+def xchg(opcode):
+    """
+    Swaps contents of registers DE and HL
+    """
+
+    registers[3], registers[5] = registers[5], registers[3] # DH -> HD
+    registers[4], registers[6] = registers[6], registers[4] # EL -> LE
+
+def xthl(opcode):
+    """
+    Exchanges stack top with HL (does not move sp, just reads and writes)
+    """
+
+    low_byte, high_byte = ram[sp], ram[sp + 1] # Read from stack
+
+    ram[sp], ram[sp + 1] = registers[6], registers[5] # Write to stack
+
+    registers[6], registers[5] = low_byte, high_byte # Write to registers
+
+def sphl(opcode):
+    """
+    Copies HL directly into SP
+    """
+
+    global sp
+    sp = get_hl_address()
+
+# <-- Memory load/store -->
+
+def sta(opcode):
+    """
+    Takes the current value of A and stores it at the fetched address in RAM
+    """
+
+    # Get address bytes
+    low_byte = fetch_byte()
+    high_byte = fetch_byte()
+
+    # Combine bytes
+    value = (high_byte << 8) | low_byte
+
+    # Store accumulator value in RAM
+    ram[value] = registers[0]
+
+def lda(opcode):
+    """
+    Fetches the value from RAM and stores it in the accumulator
+    """
+
+    # Get address bytes
+    low_byte = fetch_byte()
+    high_byte = fetch_byte()
+
+    # Combine bytes
+    value = (high_byte << 8) | low_byte
+
+    # Store RAM value in accumulator
+    registers[0] = ram[value]
+
+def shld(opcode):
+    """
+    Writes L and H to the given address and address + 1
+    """
+
+    # Get address bytes
+    low_byte = fetch_byte()
+    high_byte = fetch_byte()
+
+    # Combine bytes
+    value = (high_byte << 8) | low_byte
+
+    # Write to both addresses
+    ram[value] = registers[6]
+    ram[(value + 1) & 0xFFFF] = registers[5]
+
+def lhld(opcode):
+    """
+    Reads the low byte from the fetched address, high byte from address + 1, and load them into L and H
+    """
+
+    # Get address bytes
+    low_byte = fetch_byte()
+    high_byte = fetch_byte()
+
+    # Combine bytes
+    value = (high_byte << 8) | low_byte
+
+    # Write low and high byte to L and H
+    registers[6] = ram[value]
+    registers[5] = ram[(value + 1) & 0xFFFF]
+
+def pchl(opcode):
+    """
+    Jump to the address currently in HL
+    """
+
+    global pc
+    pc = get_hl_address()
+
+def rst(opcode):
+    """
+    CALL but from the opcode (bits 3-5, respectively)
+    """
+
+    nnn = ((opcode & 0x38) >> 3) & 0xFFFF
+
+    global pc, sp
+
+    value = nnn * 8  # Jump address
+
+    # Fetch high and low byte of program counter
+    low_byte = pc & 0xFF
+    high_byte = (pc >> 8) & 0xFF
+
+    # Push it on the stack
+    sp = (sp - 1) & 0xFFFF
+    ram[sp] = high_byte
+    sp = (sp - 1) & 0xFFFF
+    ram[sp] = low_byte
+
+    pc = value # Move the program counter to the jump address
+
+def stax(opcode):
+    """
+    Store A into memory at the address held in BC (or DE)
+    """
+
+    # Extract RP code
+    rp_code = ((opcode & 0x30) >> 4) & 0b11
+
+    # Convert RP code to index
+    high, low = RP_CODE_TO_INDEX[rp_code]
+
+    # Get bytes and combine them
+    low_byte = registers[low]
+    high_byte = registers[high]
+    value = (high_byte << 8) | low_byte
+
+    # Store A into memory
+    ram[value] = registers[0]
+
+def ldax(opcode):
+    """
+    Load A from memory at the address held in BC (or DE)
+    """
+
+    # Extract RP code
+    rp_code = ((opcode & 0x30) >> 4) & 0b11
+
+    # Convert RP code to index
+    high, low = RP_CODE_TO_INDEX[rp_code]
+
+    # Get bytes and combine them
+    low_byte = registers[low]
+    high_byte = registers[high]
+    value = (high_byte << 8) | low_byte
+
+    # Load A into memory
+    registers[0] = ram[value]
