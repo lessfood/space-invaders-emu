@@ -1,10 +1,24 @@
+"""
+Module for emulating an Intel 8080 CPU
+"""
+
+# TODO: each opcode needs an associated cycle-count,
+# and step() should increment the counter by that instead of a flat 1. 
+# store it in a cycles lookup table parallel to dispatch_table,
+# keyed by opcode, same way
+
 ram = bytearray(65536)  # 64KB of RAM
+
+# Map port numbers (0-255) to specific functions
+port_in_handlers = {}
+port_out_handlers = {}
 
 registers = bytearray(7)  # 7 registers: A, B, C, D, E, H, L
 # pairs: b/c, d/e, h/l
 
-flags = 0x00 # a single byte (plain int, masked & 0xFF), with bit-level check/set/clear operations at specific positions 
+flags = 0x02 # a single byte (plain int, masked & 0xFF), with bit-level check/set/clear operations at specific positions 
 # (Sign=7, Zero=6, AC=4, Parity=2, Carry=0)
+# 8080 quirk, bit 1 is always on
 
 pc = 0x0000  # Program Counter (16-bit); masked & 0xFFFF
 # starts at 0x0000, but can be set to any address in the 64KB address space
@@ -12,11 +26,19 @@ pc = 0x0000  # Program Counter (16-bit); masked & 0xFFFF
 sp = 0x0000  # Stack Pointer (16-bit); masked & 0xFFFF
 # starts at 0x0000 as a placeholder; real programs initialize SP themselves via LXI SP before using the stack
 
+halted = False # Is the CPU halted?
+
+interrupts_enabled = False # self-explanatory
+
+interrupt_pending = False # is an interrupt pending?
+interrupt_vector = 0   # which RST number (0-7) to service
+
 CODE_TO_INDEX = {0b000: 1, 0b001: 2, 0b010: 3, 0b011: 4, 0b100: 5, 0b101: 6, 0b111: 0}
 # This dictionary maps 3-bit register codes to their corresponding indices in the registers array.
 
 RP_CODE_TO_INDEX = {0b00: (1, 2), 0b01: (3, 4), 0b10: (5, 6)}
 # This dictionary maps 2-bit register pair codes to their corresponding indices in the registers array.
+
 
 def fetch_byte():
     """
@@ -123,18 +145,24 @@ def inr(opcode):
     global flags
     ddd = (opcode >> 3) & 0b111  # Destination register code
 
+    
+
     if ddd == 0b110:  # If destination is M (memory at HL)
         hl_address = get_hl_address()
         value = ram[hl_address]
+        aux_carry = ((value ^ (value + 1)) & 0x10) != 0
         value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
         ram[hl_address] = value
     else:
         value = registers[CODE_TO_INDEX[ddd]]
+        aux_carry = ((value ^ (value + 1)) & 0x10) != 0
         value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
         registers[CODE_TO_INDEX[ddd]] = value
 
+
     # Update flags based on the new value
     flags = update_zsp_flags(flags, value)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
 
 def dcr(opcode):
     """
@@ -144,18 +172,32 @@ def dcr(opcode):
     global flags
     ddd = (opcode >> 3) & 0b111  # Destination register code
 
+
     if ddd == 0b110:  # If destination is M (memory at HL)
         hl_address = get_hl_address()
         value = ram[hl_address]
+        old = value
+        new = (old - 1) & 0xFF
+
+        aux_carry = (old & 0x0F) != 0
         value = (value - 1) & 0xFF  # Decrement and wrap around at 8 bits
         ram[hl_address] = value
     else:
         value = registers[CODE_TO_INDEX[ddd]]
+
+        old = value
+        new = (old - 1) & 0xFF
+
+        aux_carry = (old & 0x0F) != 0
+
         value = (value - 1) & 0xFF  # Decrement and wrap around at 8 bits
         registers[CODE_TO_INDEX[ddd]] = value
 
+
     # Update flags based on the new value
     flags = update_zsp_flags(flags, value)
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+
 
 def mvi(opcode):
     """
@@ -234,7 +276,7 @@ def dcx(opcode):
         value &= 0xFFFF  # Ensure it's a 16-bit value
 
         registers[low_index] = value & 0xFF          # Store the low byte back into the low register
-        registers[high_index] = (value >> 8) & 0xFF   # Store the high byte back into the high register\
+        registers[high_index] = (value >> 8) & 0xFF   # Store the high byte back into the high register
 
 # <-- Arithmetic Operations -->
 
@@ -255,7 +297,7 @@ def add(opcode):
     result = total & 0xFF  # Keep only the lower 8 bits
 
     carry = total > 0xFF  # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) + (value & 0x0F)) > 0x0F  # Check for auxiliary carry
+    aux_carry = ((registers[0] & 0x0F) + (value & 0x0F)) > 0x0F # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -306,7 +348,7 @@ def sub(opcode):
     result = total & 0xFF # Keep only lower 8 bits
 
     carry = registers[0] < value # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (value & 0x0F)) < 0 # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= (value & 0x0F) # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -333,7 +375,7 @@ def sbb(opcode):
     result = total & 0xFF  # Keep only the lower 8 bits
 
     carry = total < 0  # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (value & 0x0F) - borrow_in) < 0  # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= ((value & 0x0F) + borrow_in)  # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -428,7 +470,7 @@ def cmp(opcode):
     result = total & 0xFF # Keep only lower 8 bits
 
     carry = registers[0] < value # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (value & 0x0F)) < 0 # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= (value & 0x0F) # Check for auxiliary carry
 
 
     flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
@@ -489,7 +531,7 @@ def sui(opcode):
     result = total & 0xFF # Keep only lower 8 bits
 
     carry = registers[0] < immediate_value # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F)) < 0 # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= (immediate_value & 0x0F) # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -511,7 +553,7 @@ def sbi(opcode):
     result = total & 0xFF  # Keep only the lower 8 bits
 
     carry = total < 0  # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F) - borrow_in) < 0  # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= ((immediate_value & 0x0F) + borrow_in)  # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -585,13 +627,13 @@ def cpi(opcode):
     total = registers[0] - immediate_value
     result = total & 0xFF # Keep only lower 8 bits
 
-    carry = registers[0] < immediate_value # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F)) < 0 # Check for auxiliary carry
+    carry = registers[0] < immediate_value 
+    
+    aux_carry = (registers[0] & 0x0F) >= (immediate_value & 0x0F)
 
-
-    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
-    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
-    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+    flags = update_zsp_flags(flags, result) 
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry)
 
 def daa(opcode):
 
@@ -601,28 +643,30 @@ def daa(opcode):
 
     global flags
 
+    old_a = registers[0]
+
+    correction = 0
     aux_carry = False
     carry = False
 
-    result = registers[0]
+    # Lower nibble adjustment
+    if (old_a & 0x0F) > 9 or (flags & 0x10):
+        correction |= 0x06
 
-    # Step 1
-    if ((registers[0] & 0x0F) > 9) or ((flags & 0b00010000) != 0):
-        total = registers[0] + 0x06
-        result = total & 0xFF
-        registers[0] = result
-        aux_carry = True
-
-    # Step 2
-    if (((registers[0] & 0xF0) >> 4) > 9) or ((flags & 0x01) != 0):
-        total = registers[0] + 0x60
-        result = total & 0xFF
-        registers[0] = result
+    # Upper nibble adjustment
+    if (old_a > 0x99) or (flags & 0x01):
+        correction |= 0x60
         carry = True
 
-    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
-    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
-    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+    # Calculate AC from low nibble addition
+    aux_carry = ((old_a & 0x0F) + (correction & 0x0F)) > 0x0F
+
+    result = (old_a + correction) & 0xFF
+    registers[0] = result
+
+    flags = update_zsp_flags(flags, result)
+    flags = set_or_clear_flag(flags, 0x01, carry)
+    flags = set_or_clear_flag(flags, 0x10, aux_carry)
 
 def cma(opcode):
     """
@@ -673,3 +717,809 @@ def dad(opcode):
     registers[5] = (result >> 8) & 0xFF   # H = high byte
 
     flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag only — no Z/S/P/AC
+
+def push(opcode):
+    """
+    Push PSW or RP onto the stack
+    """
+
+    global sp
+    rp_code = (opcode >> 4) & 0b11  # Register pair code
+
+
+    if rp_code == 0b11:  # 0b11 means PSW, anything else means rp
+
+        low_byte = flags
+        high_byte = registers[0]
+    else:
+        high_index, low_index = RP_CODE_TO_INDEX[rp_code]
+        low_byte = registers[low_index]
+        high_byte = registers[high_index]
+
+    # decrement, high, decrement, low
+    sp = (sp - 1) & 0xFFFF
+    ram[sp] = high_byte
+    sp = (sp - 1) & 0xFFFF
+    ram[sp] = low_byte
+
+# <-- Stack and PC operations -->
+
+def pop(opcode):
+    """
+    Pop the lowest item off the stack.
+    """
+
+    global sp, flags
+    rp_code = (opcode >> 4) & 0b11  # Register pair code
+
+    low_byte = ram[sp]
+    sp = (sp + 1) & 0xFFFF
+    high_byte = ram[sp]
+    sp = (sp + 1) & 0xFFFF
+
+    if rp_code == 0b11:  # 0b11 means PSW, anything else means rp
+
+        flags = (low_byte & 0xD7) | 0x02
+        registers[0] = high_byte
+    else:
+        high_index, low_index = RP_CODE_TO_INDEX[rp_code]
+        registers[high_index] = high_byte
+        registers[low_index] = low_byte
+
+def jmp(opcode):
+    """
+    Moves the program counter to a specific address in RAM.
+    """
+
+    global pc
+
+    low_byte = fetch_byte()         # Fetch the low byte of the immediate value
+    high_byte = fetch_byte()        # Fetch the high byte of the immediate value
+
+    value = (high_byte << 8) | low_byte  # Combine high and low bytes to form a 16-bit value
+
+    pc = value # Move the program counter to that value
+
+def call(opcode):
+    """
+    Saves the return address in RAM, then jumps to the place defined by the immediate value
+    """
+
+    global pc, sp
+
+    low_byte = fetch_byte()         # Fetch the low byte of the immediate value
+    high_byte = fetch_byte()        # Fetch the high byte of the immediate value
+
+    value = (high_byte << 8) | low_byte  # Combine high and low bytes to form a 16-bit value
+
+    # Fetch high and low byte of program counter
+    low_byte = pc & 0xFF
+    high_byte = (pc >> 8) & 0xFF
+
+    # Push it on the stack
+    sp = (sp - 1) & 0xFFFF
+    ram[sp] = high_byte
+    sp = (sp - 1) & 0xFFFF
+    ram[sp] = low_byte
+
+    pc = value # Move the program counter to the jump address
+
+def ret(opcode):
+    """
+    Moves the program counter to the return value on the stack.
+    """
+
+    global sp, pc
+
+    # Read return address off of stack
+    low_byte = ram[sp]
+    sp = (sp + 1) & 0xFFFF
+    high_byte = ram[sp]
+    sp = (sp + 1) & 0xFFFF
+
+    # Combine the two bytes
+    value = (high_byte << 8) | low_byte 
+
+    # Return to address
+    pc = value
+
+# <-- Conditional Jumps -->
+
+def conditional_jump(condition):
+    """
+    Helper function for any conditional jump instruction
+    """
+    global pc
+
+    low_byte = fetch_byte()         # Fetch the low byte of the immediate value
+    high_byte = fetch_byte()        # Fetch the high byte of the immediate value
+
+    if (condition):
+    
+            value = (high_byte << 8) | low_byte # Combine them into one address
+    
+            pc = value # Jump
+
+def jz(opcode):
+    """
+    Jump to target address only if zero flag is set
+    """
+
+    conditional_jump((flags & 0x40) != 0)
+
+def jnz(opcode):
+    """
+    Jump to target address only if zero flag is not set
+    """
+
+    conditional_jump((flags & 0x40) == 0)
+
+def jc(opcode):
+    """
+    Jump only if carry flag is set
+    """
+
+    conditional_jump((flags & 0x01) != 0)
+
+def jnc(opcode):
+    """
+    Jump only if carry flag is not set
+    """
+
+    conditional_jump((flags & 0x01) == 0)
+
+def jpe(opcode):
+    """
+    Jump only if parity flag is set
+    """
+
+    conditional_jump((flags & 0x04) != 0)
+
+def jpo(opcode):
+    """
+    Jump only if parity flag is not set
+    """
+
+    conditional_jump((flags & 0x04) == 0)
+
+def jp(opcode):
+    """
+    Jump only if sign flag is not set
+    """
+
+    conditional_jump((flags & 0x80) == 0)
+
+def jm(opcode):
+    """
+    Jump only if sign flag is set
+    """
+
+    conditional_jump((flags & 0x80) != 0)
+
+# <-- Conditional Calls -->
+
+def conditional_call(condition):
+    """
+    Helper function for conditional call instructions
+    """
+
+    global pc, sp
+
+    low_byte = fetch_byte()         # Fetch the low byte of the immediate value
+    high_byte = fetch_byte()        # Fetch the high byte of the immediate value
+
+    if (condition):
+
+        value = (high_byte << 8) | low_byte  # Combine high and low bytes to form a 16-bit value
+
+        # Fetch high and low byte of program counter
+        low_byte = pc & 0xFF
+        high_byte = (pc >> 8) & 0xFF
+
+        # Push it on the stack
+        sp = (sp - 1) & 0xFFFF
+        ram[sp] = high_byte
+        sp = (sp - 1) & 0xFFFF
+        ram[sp] = low_byte
+
+        pc = value # Move the program counter to the jump address
+
+def cz(opcode):
+    """
+    Call to target address only if zero flag is set
+    """
+
+    conditional_call((flags & 0x40) != 0)
+
+def cnz(opcode):
+    """
+    Call to target address only if zero flag is not set
+    """
+
+    conditional_call((flags & 0x40) == 0)
+
+def cc(opcode):
+    """
+    Call only if carry flag is set
+    """
+
+    conditional_call((flags & 0x01) != 0)
+
+def cnc(opcode):
+    """
+    Call only if carry flag is not set
+    """
+
+    conditional_call((flags & 0x01) == 0)
+
+def cpe(opcode):
+    """
+    Call only if parity flag is set
+    """
+
+    conditional_call((flags & 0x04) != 0)
+
+def cpo(opcode):
+    """
+    Call only if parity flag is not set
+    """
+
+    conditional_call((flags & 0x04) == 0)
+
+def cp(opcode):
+    """
+    Call only if sign flag is not set
+    """
+
+    conditional_call((flags & 0x80) == 0)
+
+def cm(opcode):
+    """
+    Call only if sign flag is set
+    """
+
+    conditional_call((flags & 0x80) != 0)
+
+# <-- Conditional Returns -->
+
+def conditional_return(condition):
+    """
+    Helper function for conditional return instructions
+    """
+
+    global sp, pc
+
+    if (condition):
+
+        # Read return address off of stack
+        low_byte = ram[sp]
+        sp = (sp + 1) & 0xFFFF
+        high_byte = ram[sp]
+        sp = (sp + 1) & 0xFFFF
+
+        # Combine the two bytes
+        value = (high_byte << 8) | low_byte 
+
+        # Return to address
+        pc = value
+
+def rz(opcode):
+    """
+    Return to target address only if zero flag is set
+    """
+
+    conditional_return((flags & 0x40) != 0)
+
+def rnz(opcode):
+    """
+    Return to target address only if zero flag is not set
+    """
+
+    conditional_return((flags & 0x40) == 0)
+
+def rc(opcode):
+    """
+    Return only if carry flag is set
+    """
+
+    conditional_return((flags & 0x01) != 0)
+
+def rnc(opcode):
+    """
+    Return only if carry flag is not set
+    """
+
+    conditional_return((flags & 0x01) == 0)
+
+def rpe(opcode):
+    """
+    Return only if parity flag is set
+    """
+
+    conditional_return((flags & 0x04) != 0)
+
+def rpo(opcode):
+    """
+    Return only if parity flag is not set
+    """
+
+    conditional_return((flags & 0x04) == 0)
+
+def rp(opcode):
+    """
+    Return only if sign flag is not set
+    """
+
+    conditional_return((flags & 0x80) == 0)
+
+def rm(opcode):
+    """
+    Return only if sign flag is set
+    """
+
+    conditional_return((flags & 0x80) != 0)
+
+# <-- Rotations -->
+
+def rlc(opcode):
+    """
+    Rotates A left, whatever's left gets sent into carry flag
+    """
+    global flags
+
+    carry_out = (registers[0] & 0x80) >> 7 # the bit that fell off, also becomes the new Carry
+    result = ((registers[0] << 1) | carry_out) & 0xFF # shift left, OR the wrapped bit into position 0, then mask to 8 bits
+
+    registers[0] = result # Update accumulator
+
+    flags = set_or_clear_flag(flags, 0b00000001, carry_out)  # Update Carry flag only — no Z/S/P/AC
+
+def rrc(opcode):
+    """
+    Rotates A right, whatever's left gets sent into carry flag
+    """
+    global flags
+
+    carry_out = registers[0] & 0x01 # the bit that fell off, also becomes the new Carry
+    result = ((registers[0] >> 1) | carry_out) & 0xFF # shift right, OR the wrapped bit into position 0, then mask to 8 bits
+
+    registers[0] = result # Update accumulator
+
+    flags = set_or_clear_flag(flags, 0b00000001, carry_out)  # Update Carry flag only — no Z/S/P/AC
+
+def ral(opcode):
+    """
+    Rotates A left through carry, whatever's left gets sent into bit 0
+    """
+    global flags
+
+    carry_out = flags & 0x01
+
+    result = ((registers[0] << 1) | carry_out) & 0xFF # shift left, OR the wrapped bit into position 0, then mask to 8 bits
+    carry_out = (registers[0] & 0x80) >> 7 # the bit that fell off, also becomes the new Carry
+
+    registers[0] = result # Update accumulator
+
+    flags = set_or_clear_flag(flags, 0b00000001, carry_out)  # Update Carry flag only — no Z/S/P/AC
+
+def rar(opcode):
+    """
+    Rotates A right through carry, whatever's left gets sent into bit 0
+    """
+    global flags
+
+    carry_out = (flags & 0x01) << 7
+
+    result = ((registers[0] >> 1) | carry_out) & 0xFF # shift right, OR the wrapped bit into position 0, then mask to 8 bits
+    carry_out = (registers[0] & 0x01) # the bit that fell off, also becomes the new Carry
+
+    registers[0] = result # Update accumulator
+
+    flags = set_or_clear_flag(flags, 0b00000001, carry_out)  # Update Carry flag only — no Z/S/P/AC
+
+# <-- I/O -->
+
+def in_(opcode):
+    """
+    Fetch the port number from the immediate byte and execute its read handler.
+    Store the result in the accumulator.
+    """
+    immediate_byte = fetch_byte() # Fetch port number
+    
+    if immediate_byte in port_in_handlers:
+        # Execute the hardware callback and store the result in A
+        registers[0] = port_in_handlers[immediate_byte]() 
+    else:
+        # Default value if no hardware is connected to this port
+        registers[0] = 0xFF 
+
+def out(opcode):
+    """
+    Fetch the port number from the immediate byte and pass the value of A 
+    into the corresponding write handler.
+    """
+    immediate_byte = fetch_byte() # Fetch port number
+    
+    if immediate_byte in port_out_handlers:
+        # Pass the value in A to the external hardware callback
+        port_out_handlers[immediate_byte](registers[0])
+
+def hlt(opcode):
+    """
+    Halts the CPU
+    """
+    global halted
+
+    halted = True
+
+def ei(opcode):
+    """
+    Enables interrupts
+    """
+    global interrupts_enabled
+
+    interrupts_enabled = True
+
+def di(opcode):
+    """
+    Disables interrupts
+    """
+    global interrupts_enabled
+
+    interrupts_enabled = False
+
+# <-- Exchange -->
+
+def xchg(opcode):
+    """
+    Swaps contents of registers DE and HL
+    """
+
+    registers[3], registers[5] = registers[5], registers[3] # DH -> HD
+    registers[4], registers[6] = registers[6], registers[4] # EL -> LE
+
+def xthl(opcode):
+    """
+    Exchanges stack top with HL (does not move sp, just reads and writes)
+    """
+
+    low_byte, high_byte = ram[sp], ram[sp + 1] # Read from stack
+
+    ram[sp], ram[sp + 1] = registers[6], (registers[5] & 0xFFFF) # Write to stack
+
+    registers[6], registers[5] = low_byte, high_byte # Write to registers
+
+def sphl(opcode):
+    """
+    Copies HL directly into SP
+    """
+
+    global sp
+    sp = get_hl_address()
+
+# <-- Memory load/store -->
+
+def sta(opcode):
+    """
+    Takes the current value of A and stores it at the fetched address in RAM
+    """
+
+    # Get address bytes
+    low_byte = fetch_byte()
+    high_byte = fetch_byte()
+
+    # Combine bytes
+    value = (high_byte << 8) | low_byte
+
+    # Store accumulator value in RAM
+    ram[value] = registers[0]
+
+def lda(opcode):
+    """
+    Fetches the value from RAM and stores it in the accumulator
+    """
+
+    # Get address bytes
+    low_byte = fetch_byte()
+    high_byte = fetch_byte()
+
+    # Combine bytes
+    value = (high_byte << 8) | low_byte
+
+    # Store RAM value in accumulator
+    registers[0] = ram[value]
+
+def shld(opcode):
+    """
+    Writes L and H to the given address and address + 1
+    """
+
+    # Get address bytes
+    low_byte = fetch_byte()
+    high_byte = fetch_byte()
+
+    # Combine bytes
+    value = (high_byte << 8) | low_byte
+
+    # Write to both addresses
+    ram[value] = registers[6]
+    ram[(value + 1) & 0xFFFF] = registers[5]
+
+def lhld(opcode):
+    """
+    Reads the low byte from the fetched address, high byte from address + 1, and load them into L and H
+    """
+
+    # Get address bytes
+    low_byte = fetch_byte()
+    high_byte = fetch_byte()
+
+    # Combine bytes
+    value = (high_byte << 8) | low_byte
+
+    # Write low and high byte to L and H
+    registers[6] = ram[value]
+    registers[5] = ram[(value + 1) & 0xFFFF]
+
+def pchl(opcode):
+    """
+    Jump to the address currently in HL
+    """
+
+    global pc
+    pc = get_hl_address()
+
+def rst(opcode):
+    """
+    CALL but from the opcode (bits 3-5, respectively)
+    """
+
+    nnn = ((opcode & 0x38) >> 3) & 0xFFFF
+
+    global pc, sp
+
+    value = nnn * 8  # Jump address
+
+    # Fetch high and low byte of program counter
+    low_byte = pc & 0xFF
+    high_byte = (pc >> 8) & 0xFF
+
+    # Push it on the stack
+    sp = (sp - 1) & 0xFFFF
+    ram[sp] = high_byte
+    sp = (sp - 1) & 0xFFFF
+    ram[sp] = low_byte
+
+    pc = value # Move the program counter to the jump address
+
+def stax(opcode):
+    """
+    Store A into memory at the address held in BC (or DE)
+    """
+
+    # Extract RP code
+    rp_code = ((opcode & 0x30) >> 4) & 0b11
+
+    # Convert RP code to index
+    high, low = RP_CODE_TO_INDEX[rp_code]
+
+    # Get bytes and combine them
+    low_byte = registers[low]
+    high_byte = registers[high]
+    value = (high_byte << 8) | low_byte
+
+    # Store A into memory
+    ram[value] = registers[0]
+
+def ldax(opcode):
+    """
+    Load A from memory at the address held in BC (or DE)
+    """
+
+    # Extract RP code
+    rp_code = ((opcode & 0x30) >> 4) & 0b11
+
+    # Convert RP code to index
+    high, low = RP_CODE_TO_INDEX[rp_code]
+
+    # Get bytes and combine them
+    low_byte = registers[low]
+    high_byte = registers[high]
+    value = (high_byte << 8) | low_byte
+
+    # Load A into memory
+    registers[0] = ram[value]
+
+def nop(opcode):
+    pass
+
+def request_interrupt(vector):
+    """
+    Called by the outside world (e.g. the frame timing loop) to request
+    that the CPU service RST `vector` at the next opportunity.
+    """
+    global interrupt_pending, interrupt_vector
+
+    interrupt_pending = True
+    interrupt_vector = vector
+
+
+# <-- Dispatch Table -->
+# so the CPU actually knows what to do lol
+
+# hardcoding
+dispatch_table = {0x00: nop, 0x07: rlc, 0x0F: rrc, 0x17: ral, 0x1F: rar,
+                  0x27: daa, 0x2F: cma, 0x37: stc, 0x3F: cmc, 0x76: hlt,
+                  0xC9: ret, 0xE3: xthl, 0xE9: pchl, 0xEB: xchg, 0xF3: di,
+                  0xF9: sphl, 0xFB: ei, 0xC6: adi, 0xCE: aci, 0xD6: sui,
+                  0xDE: sbi, 0xE6: ani, 0xEE: xri, 0xF6: ori, 0xFE: cpi,
+                  0xDB: in_, 0xD3: out, 0xC3: jmp, 0xCD: call, 0x22: shld,
+                  0x2A: lhld, 0x32: sta, 0x3A: lda, 0x08: nop, 0x10: nop,
+                  0x18: nop, 0x20: nop, 0x28: nop, 0x30: nop, 0x38: nop,
+                  0xCB: jmp, 0xD9: ret, 0xDD: call, 0xED: call, 0xFD: call
+                  }
+
+# functional
+
+# RP
+for rp_code in range(4):
+
+    # get opcodes
+    lxi_opcode = 0x01 + (rp_code << 4)
+    dad_opcode = 0x09 + (rp_code << 4)
+    inx_opcode = 0x03 + (rp_code << 4)
+    dcx_opcode = 0x0B + (rp_code << 4)
+    push_opcode = 0xC5 + (rp_code << 4)
+    pop_opcode = 0xC1 + (rp_code << 4)
+
+    # put them in dict
+    dispatch_table[lxi_opcode] = lxi
+    dispatch_table[dad_opcode] = dad
+    dispatch_table[inx_opcode] = inx
+    dispatch_table[dcx_opcode] = dcx
+    dispatch_table[push_opcode] = push
+    dispatch_table[pop_opcode] = pop
+
+# jump/call/return
+jump_funcs = [jnz, jz, jnc, jc, jpo, jpe, jp, jm]
+call_funcs = [cnz, cz, cnc, cc, cpo, cpe, cp, cm]
+return_funcs = [rnz, rz, rnc, rc, rpo, rpe, rp, rm]
+
+for i in range(8):
+
+    # get opcodes
+    jump_opcode = 0xC2 + (i << 3)
+    return_opcode = 0xC0 + (i << 3)
+    call_opcode = 0xC4 + (i << 3)
+
+    # put in dict
+    dispatch_table[jump_opcode] = jump_funcs[i]
+    dispatch_table[call_opcode] = call_funcs[i]
+    dispatch_table[return_opcode] = return_funcs[i]
+
+# MOV family
+for ddd in range(8):
+    for sss in range(8):
+
+        # get rid of forbidden case
+        if (ddd == 6) and (sss == 6):
+            continue
+
+        elif sss == 6:
+            func = mem_to_reg
+
+        elif ddd == 6:
+            func = reg_to_mem
+
+        else:
+            func = mov_reg_to_reg
+
+        # calculate opcode
+        opcode = 0x40 + (ddd << 3) + sss
+
+        # write to table
+        dispatch_table[opcode] = func
+
+# ALU
+
+alu_funcs = [add, adc, sub, sbb, ana, xra, ora, cmp]
+
+for ooo in range(8):
+    for sss in range(8):
+
+        # get func
+        func = alu_funcs[ooo]
+
+        # calculate opcode
+        opcode = 0x80 + (ooo << 3) + sss
+
+        # write to table
+        dispatch_table[opcode] = func
+
+
+# MVI/INR/DCR
+
+for ddd in range(8):
+
+    # calculate opcodes
+    inr_opcode = 0x04 + (ddd << 3)
+    dcr_opcode = 0x05 + (ddd << 3)
+    mvi_opcode = 0x06 + (ddd << 3)
+
+    # write to table
+    dispatch_table[inr_opcode] = inr
+    dispatch_table[dcr_opcode] = dcr
+    dispatch_table[mvi_opcode] = mvi
+
+# RST
+
+for nnn in range(8):
+
+    # calculate opcode
+    opcode = 0xC7 + (nnn << 3)
+
+    # write to table
+    dispatch_table[opcode] = rst
+
+# STAX/LDAX
+for rp_code in range(2):
+
+    # get opcodes
+    stax_opcode = 0x02 + (rp_code << 4)
+    ldax_opcode = 0x0A + (rp_code << 4)
+
+    # put them in dict
+    dispatch_table[ldax_opcode] = ldax
+    dispatch_table[stax_opcode] = stax
+
+print(dispatch_table[0x05].__name__)
+
+# make cpu go
+def step():
+    """
+    Executes one CPU cycle
+    """
+    global halted, interrupt_pending, interrupts_enabled
+
+    if halted:
+        return
+
+    if interrupt_pending and interrupts_enabled:
+        # service the interrupt instead of a normal fetch
+        interrupt_pending = False              # clear the pending flag
+        interrupts_enabled = False              # disable further interrupts (re-armed by EI)
+        rst(0xC7 + (interrupt_vector << 3))
+        return
+
+    opcode = fetch_byte()
+    dispatch_table[opcode](opcode)
+
+def reset_cpu():
+    global ram, ports, registers, flags, pc, sp, halted, interrupts_enabled, interrupt_pending, interrupt_vector
+
+
+    ram = bytearray(65536)  # 64KB of RAM
+
+    ports = bytearray(256) # 256 seperate ports for interacting with actual "hardware" (user input)
+
+    registers = bytearray(7)  # 7 registers: A, B, C, D, E, H, L
+    # pairs: b/c, d/e, h/l
+
+    flags = 0x02 # a single byte (plain int, masked & 0xFF), with bit-level check/set/clear operations at specific positions 
+    # (Sign=7, Zero=6, AC=4, Parity=2, Carry=0)
+    # 8080 quirk, bit 1 is always on
+
+    pc = 0x0000  # Program Counter (16-bit); masked & 0xFFFF
+    # starts at 0x0000, but can be set to any address in the 64KB address space
+
+    sp = 0x0000  # Stack Pointer (16-bit); masked & 0xFFFF
+    # starts at 0x0000 as a placeholder; real programs initialize SP themselves via LXI SP before using the stack
+
+    halted = False # Is the CPU halted?
+
+    interrupts_enabled = False # self-explanatory
+
+    interrupt_pending = False # is an interrupt pending?
+    interrupt_vector = 0   # which RST number (0-7) to service
+
+    print("CPU reset!")

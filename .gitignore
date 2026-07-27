@@ -8,3 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Full roms
+# invaders.rom
+# invaders.e
+# invaders.f
+# invaders.g
+# invaders.h
+
+# wav files
+# *.wav
