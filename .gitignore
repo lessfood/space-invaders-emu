@@ -10,7 +10,11 @@ wheels/
 .venv
 
 # Full roms
-invaders.rom
+# invaders.rom
+# invaders.e
+# invaders.f
+# invaders.g
+# invaders.h
 
 # wav files
-*.wav
+# *.wav

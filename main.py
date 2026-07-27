@@ -9,6 +9,8 @@ FRAME_TIME = 1/60  # seconds per frame, as a float
 cycles_since_frame_start = 0
 mid_screen_fired = False
 
+frame = 0
+
 import os
 
 def generate_rom(files):
@@ -52,7 +54,7 @@ def run_one_frame():
     """
     Runs for one frame of Space Invaders
     """
-    global cycles_since_frame_start, mid_screen_fired
+    global cycles_since_frame_start, mid_screen_fired, frame
 
     while cycles_since_frame_start < CYCLES_PER_FRAME:
         cpu.step()
@@ -65,6 +67,7 @@ def run_one_frame():
     cpu.request_interrupt(2)
     cycles_since_frame_start = 0
     mid_screen_fired = False
+    frame += 1
 
 
 
@@ -140,7 +143,7 @@ def main():
 
         run_one_frame()
 
-        video.draw_frame(screen, cpu.ram)
+        video.draw_frame(screen, cpu.ram, inout.sound_enabled, frame)
 
         elapsed = time.perf_counter() - frame_start
         sleep_time = FRAME_TIME - elapsed

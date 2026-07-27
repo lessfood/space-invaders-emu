@@ -82,27 +82,37 @@ ufo_channel = None
 last_port3 = 0
 last_port5 = 0
 
+sound_enabled = False
+
 def init_sounds():
-    global ufo_channel
-    pygame.mixer.init()
-    
-    # Load all sound assets
-    sounds['shoot'] = pygame.mixer.Sound('sounds/shoot.wav')
-    sounds['player_die'] = pygame.mixer.Sound('sounds/explosion.wav')
-    sounds['invader_die'] = pygame.mixer.Sound('sounds/invaderkilled.wav')
-    sounds['fleet1'] = pygame.mixer.Sound('sounds/fastinvader1.wav')
-    sounds['fleet2'] = pygame.mixer.Sound('sounds/fastinvader2.wav')
-    sounds['fleet3'] = pygame.mixer.Sound('sounds/fastinvader3.wav')
-    sounds['fleet4'] = pygame.mixer.Sound('sounds/fastinvader4.wav')
-    sounds['ufo'] = pygame.mixer.Sound('sounds/ufo_lowpitch.wav')
-    sounds['ufo_hit'] = pygame.mixer.Sound('sounds/ufo_highpitch.wav')
-    sounds['extra_ship'] = pygame.mixer.Sound('sounds/extra_ship.wav')
-    
-    # Reserve a channel specifically for the looping UFO sound
-    ufo_channel = pygame.mixer.Channel(0)
+    global ufo_channel, sound_enabled
+    try:
+        pygame.mixer.init()
+        
+        # Load all sound assets
+        sounds['shoot'] = pygame.mixer.Sound('sounds/shoot.wav')
+        sounds['player_die'] = pygame.mixer.Sound('sounds/explosion.wav')
+        sounds['invader_die'] = pygame.mixer.Sound('sounds/invaderkilled.wav')
+        sounds['fleet1'] = pygame.mixer.Sound('sounds/fastinvader1.wav')
+        sounds['fleet2'] = pygame.mixer.Sound('sounds/fastinvader2.wav')
+        sounds['fleet3'] = pygame.mixer.Sound('sounds/fastinvader3.wav')
+        sounds['fleet4'] = pygame.mixer.Sound('sounds/fastinvader4.wav')
+        sounds['ufo'] = pygame.mixer.Sound('sounds/ufo_lowpitch.wav')
+        sounds['ufo_hit'] = pygame.mixer.Sound('sounds/ufo_highpitch.wav')
+        sounds['extra_ship'] = pygame.mixer.Sound('sounds/extra_ship.wav')
+        
+        ufo_channel = pygame.mixer.Channel(0)
+        sound_enabled = True
+    except (FileNotFoundError, pygame.error):
+        print("Audio files missing or mixer failed. Running in silent mode.")
+        sound_enabled = False
 
 def write_port3(val):
     global last_port3
+    # If sound failed to load, skip trying to play it so the game doesn't crash
+    if not sound_enabled:
+        last_port3 = val
+        return
     # Rising edge: active now, but wasn't active last time
     rising_edge = val & ~last_port3
     # Falling edge: inactive now, but was active last time
@@ -120,9 +130,15 @@ def write_port3(val):
     if rising_edge & 0x10: sounds['extra_ship'].play()
 
     last_port3 = val
+        
+
 
 def write_port5(val):
     global last_port5
+    if not sound_enabled:
+        last_port5 = val
+        return
+        
     rising_edge = val & ~last_port5
     
     if rising_edge & 0x01: sounds['fleet1'].play()
@@ -132,3 +148,5 @@ def write_port5(val):
     if rising_edge & 0x10: sounds['ufo_hit'].play()
     
     last_port5 = val
+
+

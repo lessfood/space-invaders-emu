@@ -4,7 +4,13 @@ import pygame
 WIDTH, HEIGHT = 224, 256
 SCALE = 2
 
+# Global font variable
+sys_font = None
+
 def init():
+
+    global sys_font
+
     pygame.init()
     # SCALED flag tells pygame to let the OS/GPU handle the upscaling
     screen = pygame.display.set_mode((WIDTH * SCALE, HEIGHT * SCALE), pygame.SCALED)
@@ -12,10 +18,12 @@ def init():
     large_icon = pygame.image.load('assets/icon.png')
     small_icon = pygame.transform.smoothscale(large_icon, (32, 32))
     pygame.display.set_icon(small_icon)
+    pygame.font.init() # Start the font engine
+    sys_font = pygame.font.SysFont(None, 15) # Use default system font, size 36
     print("Screen initalized")
     return screen
 
-def draw_frame(screen, ram):
+def draw_frame(screen, ram, sound_enabled=True, frame=500):
     surface = pygame.Surface((WIDTH, HEIGHT))
     surface.fill((0, 0, 0))
     
@@ -46,4 +54,11 @@ def draw_frame(screen, ram):
 
     scaled = pygame.transform.scale(surface, (WIDTH * SCALE, HEIGHT * SCALE))
     screen.blit(scaled, (0, 0))
+    # --- Draw Warning Text ---
+    if not sound_enabled and frame < 180:
+        # Render red text
+        text_surface = sys_font.render("sound files not found, running without sound", True, (255, 0, 0))
+        # Center it at the top of the screen
+        rect = text_surface.get_rect(center=((WIDTH * SCALE) // 2, 10))
+        screen.blit(text_surface, rect)
     pygame.display.flip()
