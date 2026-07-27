@@ -1,3 +1,7 @@
+"""
+Module for emulating an Intel 8080 CPU
+"""
+
 ram = bytearray(65536)  # 64KB of RAM
 
 ports = bytearray(256) # 256 seperate ports for interacting with actual "hardware" (user input)
@@ -136,12 +140,12 @@ def inr(opcode):
     if ddd == 0b110:  # If destination is M (memory at HL)
         hl_address = get_hl_address()
         value = ram[hl_address]
-        aux_carry = ((value & 0x0F) + 0x01) > 0x0F
+        aux_carry = ((value ^ (value + 1) ^ 1) & 0x10) != 0
         value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
         ram[hl_address] = value
     else:
         value = registers[CODE_TO_INDEX[ddd]]
-        aux_carry = ((value & 0x0F) + 0x01) > 0x0F
+        aux_carry = ((value ^ (value + 1) ^ 1) & 0x10) != 0
         value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
         registers[CODE_TO_INDEX[ddd]] = value
 
@@ -162,12 +166,20 @@ def dcr(opcode):
     if ddd == 0b110:  # If destination is M (memory at HL)
         hl_address = get_hl_address()
         value = ram[hl_address]
-        aux_carry = ((value & 0x0F) - 0x01) < 0
+        old = value
+        new = (old - 1) & 0xFF
+
+        aux_carry = (old & 0x0F) != 0
         value = (value - 1) & 0xFF  # Decrement and wrap around at 8 bits
         ram[hl_address] = value
     else:
         value = registers[CODE_TO_INDEX[ddd]]
-        aux_carry = ((value & 0x0F) - 0x01) < 0
+
+        old = value
+        new = (old - 1) & 0xFF
+
+        aux_carry = (old & 0x0F) != 0
+
         value = (value - 1) & 0xFF  # Decrement and wrap around at 8 bits
         registers[CODE_TO_INDEX[ddd]] = value
 
@@ -275,7 +287,7 @@ def add(opcode):
     result = total & 0xFF  # Keep only the lower 8 bits
 
     carry = total > 0xFF  # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) + (value & 0x0F)) > 0x0F  # Check for auxiliary carry
+    aux_carry = ((registers[0] & 0x0F) + (value & 0x0F)) > 0x0F # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -326,7 +338,7 @@ def sub(opcode):
     result = total & 0xFF # Keep only lower 8 bits
 
     carry = registers[0] < value # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (value & 0x0F)) < 0 # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= (value & 0x0F) # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -353,7 +365,7 @@ def sbb(opcode):
     result = total & 0xFF  # Keep only the lower 8 bits
 
     carry = total < 0  # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (value & 0x0F) - borrow_in) < 0  # Check for auxiliary carry
+    aux_carry = ((registers[0] & 0x0F) < ((value & 0x0F) + borrow_in))  # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -448,7 +460,7 @@ def cmp(opcode):
     result = total & 0xFF # Keep only lower 8 bits
 
     carry = registers[0] < value # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (value & 0x0F)) < 0 # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= (value & 0x0F) # Check for auxiliary carry
 
 
     flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
@@ -509,7 +521,7 @@ def sui(opcode):
     result = total & 0xFF # Keep only lower 8 bits
 
     carry = registers[0] < immediate_value # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F)) < 0 # Check for auxiliary carry
+    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F)) >= 0 # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -531,7 +543,7 @@ def sbi(opcode):
     result = total & 0xFF  # Keep only the lower 8 bits
 
     carry = total < 0  # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F) - borrow_in) < 0  # Check for auxiliary carry
+    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F) - borrow_in) >= 0  # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -621,28 +633,30 @@ def daa(opcode):
 
     global flags
 
+    old_a = registers[0]
+
+    correction = 0
     aux_carry = False
     carry = False
 
-    result = registers[0]
+    # Lower nibble adjustment
+    if (old_a & 0x0F) > 9 or (flags & 0x10):
+        correction |= 0x06
 
-    # Step 1
-    if ((registers[0] & 0x0F) > 9) or ((flags & 0b00010000) != 0):
-        total = registers[0] + 0x06
-        result = total & 0xFF
-        registers[0] = result
-        aux_carry = True
-
-    # Step 2
-    if (((registers[0] & 0xF0) >> 4) > 9) or ((flags & 0x01) != 0):
-        total = registers[0] + 0x60
-        result = total & 0xFF
-        registers[0] = result
+    # Upper nibble adjustment
+    if (old_a > 0x99) or (flags & 0x01):
+        correction |= 0x60
         carry = True
 
-    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
-    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
-    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+    # Calculate AC from low nibble addition
+    aux_carry = ((old_a & 0x0F) + (correction & 0x0F)) > 0x0F
+
+    result = (old_a + correction) & 0xFF
+    registers[0] = result
+
+    flags = update_zsp_flags(flags, result)
+    flags = set_or_clear_flag(flags, 0x01, carry)
+    flags = set_or_clear_flag(flags, 0x10, aux_carry)
 
 def cma(opcode):
     """
@@ -735,7 +749,7 @@ def pop(opcode):
 
     if rp_code == 0b11:  # 0b11 means PSW, anything else means rp
 
-        flags = low_byte
+        flags = (low_byte & 0xD7) | 0x02
         registers[0] = high_byte
     else:
         high_index, low_index = RP_CODE_TO_INDEX[rp_code]
@@ -1296,3 +1310,148 @@ def ldax(opcode):
 
     # Load A into memory
     registers[0] = ram[value]
+
+def nop(opcode):
+    pass
+
+
+# <-- Dispatch Table -->
+# so the CPU actually knows what to do lol
+
+# hardcoding
+dispatch_table = {0x00: nop, 0x07: rlc, 0x0F: rrc, 0x17: ral, 0x1F: rar,
+                  0x27: daa, 0x2F: cma, 0x37: stc, 0x3F: cmc, 0x76: hlt,
+                  0xC9: ret, 0xE3: xthl, 0xE9: pchl, 0xEB: xchg, 0xF3: di,
+                  0xF9: sphl, 0xFB: ei, 0xC6: adi, 0xCE: aci, 0xD6: sui,
+                  0xDE: sbi, 0xE6: ani, 0xEE: xri, 0xF6: ori, 0xFE: cpi,
+                  0xDB: in_, 0xD3: out, 0xC3: jmp, 0xCD: call, 0x22: shld,
+                  0x2A: lhld, 0x32: sta, 0x3A: lda, 0x08: nop, 0x10: nop,
+                  0x18: nop, 0x20: nop, 0x28: nop, 0x30: nop, 0x38: nop,
+                  #0xCB: jmp, 0xD9: ret, 0xDD: call, 0xED: call, 0xFD: call
+                  }
+
+# functional
+
+# RP
+for rp_code in range(4):
+
+    # get opcodes
+    lxi_opcode = 0x01 + (rp_code << 4)
+    dad_opcode = 0x09 + (rp_code << 4)
+    inx_opcode = 0x03 + (rp_code << 4)
+    dcx_opcode = 0x0B + (rp_code << 4)
+    push_opcode = 0xC5 + (rp_code << 4)
+    pop_opcode = 0xC1 + (rp_code << 4)
+
+    # put them in dict
+    dispatch_table[lxi_opcode] = lxi
+    dispatch_table[dad_opcode] = dad
+    dispatch_table[inx_opcode] = inx
+    dispatch_table[dcx_opcode] = dcx
+    dispatch_table[push_opcode] = push
+    dispatch_table[pop_opcode] = pop
+
+# jump/call/return
+jump_funcs = [jnz, jz, jnc, jc, jpo, jpe, jp, jm]
+call_funcs = [cnz, cz, cnc, cc, cpo, cpe, cp, cm]
+return_funcs = [rnz, rz, rnc, rc, rpo, rpe, rp, rm]
+
+for i in range(8):
+
+    # get opcodes
+    jump_opcode = 0xC2 + (i << 3)
+    return_opcode = 0xC0 + (i << 3)
+    call_opcode = 0xC4 + (i << 3)
+
+    # put in dict
+    dispatch_table[jump_opcode] = jump_funcs[i]
+    dispatch_table[call_opcode] = call_funcs[i]
+    dispatch_table[return_opcode] = return_funcs[i]
+
+# MOV family
+for ddd in range(8):
+    for sss in range(8):
+
+        # get rid of forbidden case
+        if (ddd == 6) and (sss == 6):
+            continue
+
+        elif sss == 6:
+            func = mem_to_reg
+
+        elif ddd == 6:
+            func = reg_to_mem
+
+        else:
+            func = mov_reg_to_reg
+
+        # calculate opcode
+        opcode = 0x40 + (ddd << 3) + sss
+
+        # write to table
+        dispatch_table[opcode] = func
+
+# ALU
+
+alu_funcs = [add, adc, sub, sbb, ana, xra, ora, cmp]
+
+for ooo in range(8):
+    for sss in range(8):
+
+        # get func
+        func = alu_funcs[ooo]
+
+        # calculate opcode
+        opcode = 0x80 + (ooo << 3) + sss
+
+        # write to table
+        dispatch_table[opcode] = func
+
+
+# MVI/INR/DCR
+
+for ddd in range(8):
+
+    # calculate opcodes
+    inr_opcode = 0x04 + (ddd << 3)
+    dcr_opcode = 0x05 + (ddd << 3)
+    mvi_opcode = 0x06 + (ddd << 3)
+
+    # write to table
+    dispatch_table[inr_opcode] = inr
+    dispatch_table[dcr_opcode] = dcr
+    dispatch_table[mvi_opcode] = mvi
+
+# RST
+
+for nnn in range(8):
+
+    # calculate opcode
+    opcode = 0xC7 + (nnn << 3)
+
+    # write to table
+    dispatch_table[opcode] = rst
+
+# STAX/LDAX
+for rp_code in range(2):
+
+    # get opcodes
+    stax_opcode = 0x02 + (rp_code << 4)
+    ldax_opcode = 0x0A + (rp_code << 4)
+
+    # put them in dict
+    dispatch_table[ldax_opcode] = ldax
+    dispatch_table[stax_opcode] = stax
+
+print(dispatch_table[0x05].__name__)
+
+# make cpu go
+def step():
+    """
+    Executes one cycle if not halted
+    """
+    global halted
+    if halted:
+        return
+    opcode = fetch_byte()
+    dispatch_table[opcode](opcode)
