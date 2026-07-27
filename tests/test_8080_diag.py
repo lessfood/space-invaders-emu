@@ -8,7 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import cpu
 
-MAX_ITERATIONS = 300000000
+MAX_ITERATIONS = 3000000000
 
 num_cycles = 0
 
@@ -24,6 +24,7 @@ def load_rom(filepath, mem_location):
 
 def reset_cpu():
 
+    global num_cycles
 
     cpu.ram = bytearray(65536)  # 64KB of RAM
 
@@ -46,6 +47,8 @@ def reset_cpu():
 
     cpu.interrupts_enabled = False # self-explanatory
 
+    num_cycles = 0 # reset cycles
+
     print("CPU reset!")
 
 def tst_8080():
@@ -56,31 +59,9 @@ def tst_8080():
 
     while True:
         last_pcs.append(cpu.pc)
+        
 
-        if num_cycles % 1000000 == 0:
-            print(f"passed {num_cycles} cycles" )
-            addr = cpu.ram[0x37f7] | (cpu.ram[0x37f8] << 8)
-            print("skip3flag address:", hex(addr), "current value:", hex(cpu.ram[addr]))
-
-     #   if cpu.pc == 0x35f1:
-         #   tst_8080.counts['inner_entry'] += 1
-          #  if tst_8080.counts['inner_entry'] % 500 == 0:
-          #      ptr = cpu.ram[0x3b75] | (cpu.ram[0x3b76] << 8)
-           #     print(tst_8080.counts['inner_entry'], "ptr@0x3B75:", hex(ptr), "A:", cpu.registers[0])
-                #if cpu.pc == 0x35e6:
-        #    tst_8080.counts['outer'] += 1
-        #    base_ptr = cpu.ram[0x354f] | (cpu.ram[0x3550] << 8)
-        #    print("outer pass", tst_8080.counts['outer'], "base @ 0x354F holds:", hex(base_ptr))
-        #if not hasattr(tst_8080, 'counts'):
-         #  tst_8080.counts = {'outer': 0, 'inner_entry': 0}
-
-       # if cpu.pc == 0x35e6:
-       #     tst_8080.counts['outer'] += 1
-       # if cpu.pc == 0x35f1:
-       #     tst_8080.counts['inner_entry'] += 1
-        #    print(tst_8080.counts, "A:", cpu.registers[0])
-
-        if len(last_pcs) > 20:
+        if len(last_pcs) > 50:
             last_pcs.pop(0)
 
         # test rom finished
@@ -102,16 +83,6 @@ def tst_8080():
             Stack pointer: {hex(cpu.sp)}\n
             Last PCs: {[hex(x) for x in last_pcs]}""")
 
-       # elif cpu.pc == 0x35F1:
-            
-      #      print(f"Register A: {cpu.registers[0]}\nRegister H: {cpu.registers[5]}\nRegister L: {cpu.registers[6]}")
-       #     print("outer LHLD ->", hex(cpu.ram[0x35e8] | (cpu.ram[0x35e9] << 8)))
-       #     print("outer SHLD ->", hex(cpu.ram[0x35eb] | (cpu.ram[0x35ec] << 8)))
-       #     print("inner LHLD ->", hex(cpu.ram[0x3611] | (cpu.ram[0x3612] << 8)))
-       #     print("inner SHLD ->", hex(cpu.ram[0x3616] | (cpu.ram[0x3617] << 8)))
-   
-  
-            
 
 
         # count cpu cycles
@@ -126,14 +97,19 @@ if __name__ == "__main__":
     print("\nTST8080.COM PASSED")
 
     reset_cpu()
-    class WatchedRam(bytearray):
-        def __setitem__(self, key, value):
-            if key == 0x3b6b:
-                print(f"WRITE to skip3flag: {value:#x} at pc={hex(cpu.pc)}")
-            super().__setitem__(key, value)
-
-    cpu.ram = WatchedRam(cpu.ram)
 
     load_rom("tests/CPUTEST.COM", 0x100)
     tst_8080()
-    print("CPUTEST.COM PASSED")
+    print("\nCPUTEST.COM PASSED")
+    
+    reset_cpu()
+    
+    load_rom("tests/8080PRE.COM", 0x100)
+    tst_8080()
+    print("\n8080PRE.COM PASSED")
+    
+    reset_cpu()
+    
+    load_rom("tests/8080EXER.COM", 0x100)
+    tst_8080()
+    print("\n8080EXER.COM PASSED")

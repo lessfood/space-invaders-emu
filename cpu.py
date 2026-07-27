@@ -4,7 +4,9 @@ Module for emulating an Intel 8080 CPU
 
 ram = bytearray(65536)  # 64KB of RAM
 
-ports = bytearray(256) # 256 seperate ports for interacting with actual "hardware" (user input)
+# Map port numbers (0-255) to specific functions
+port_in_handlers = {}
+port_out_handlers = {}
 
 registers = bytearray(7)  # 7 registers: A, B, C, D, E, H, L
 # pairs: b/c, d/e, h/l
@@ -140,12 +142,12 @@ def inr(opcode):
     if ddd == 0b110:  # If destination is M (memory at HL)
         hl_address = get_hl_address()
         value = ram[hl_address]
-        aux_carry = ((value ^ (value + 1) ^ 1) & 0x10) != 0
+        aux_carry = ((value ^ (value + 1)) & 0x10) != 0
         value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
         ram[hl_address] = value
     else:
         value = registers[CODE_TO_INDEX[ddd]]
-        aux_carry = ((value ^ (value + 1) ^ 1) & 0x10) != 0
+        aux_carry = ((value ^ (value + 1)) & 0x10) != 0
         value = (value + 1) & 0xFF  # Increment and wrap around at 8 bits
         registers[CODE_TO_INDEX[ddd]] = value
 
@@ -266,7 +268,7 @@ def dcx(opcode):
         value &= 0xFFFF  # Ensure it's a 16-bit value
 
         registers[low_index] = value & 0xFF          # Store the low byte back into the low register
-        registers[high_index] = (value >> 8) & 0xFF   # Store the high byte back into the high register\
+        registers[high_index] = (value >> 8) & 0xFF   # Store the high byte back into the high register
 
 # <-- Arithmetic Operations -->
 
@@ -365,7 +367,7 @@ def sbb(opcode):
     result = total & 0xFF  # Keep only the lower 8 bits
 
     carry = total < 0  # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) < ((value & 0x0F) + borrow_in))  # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= ((value & 0x0F) + borrow_in)  # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -521,7 +523,7 @@ def sui(opcode):
     result = total & 0xFF # Keep only lower 8 bits
 
     carry = registers[0] < immediate_value # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F)) >= 0 # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= (immediate_value & 0x0F) # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -543,7 +545,7 @@ def sbi(opcode):
     result = total & 0xFF  # Keep only the lower 8 bits
 
     carry = total < 0  # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F) - borrow_in) >= 0  # Check for auxiliary carry
+    aux_carry = (registers[0] & 0x0F) >= ((immediate_value & 0x0F) + borrow_in)  # Check for auxiliary carry
 
     registers[0] = result  # Store the result back in the accumulator (register A)
 
@@ -617,13 +619,13 @@ def cpi(opcode):
     total = registers[0] - immediate_value
     result = total & 0xFF # Keep only lower 8 bits
 
-    carry = registers[0] < immediate_value # Check if there was a carry out of the 8-bit range
-    aux_carry = ((registers[0] & 0x0F) - (immediate_value & 0x0F)) < 0 # Check for auxiliary carry
+    carry = registers[0] < immediate_value 
+    
+    aux_carry = (registers[0] & 0x0F) >= (immediate_value & 0x0F)
 
-
-    flags = update_zsp_flags(flags, result)  # Update Zero, Sign, and Parity flags based on the result
-    flags = set_or_clear_flag(flags, 0b00000001, carry)  # Update Carry flag (bit 0)
-    flags = set_or_clear_flag(flags, 0b00010000, aux_carry) # Update Auxiliary Carry flag (bit 4)
+    flags = update_zsp_flags(flags, result) 
+    flags = set_or_clear_flag(flags, 0b00000001, carry)  
+    flags = set_or_clear_flag(flags, 0b00010000, aux_carry)
 
 def daa(opcode):
 
@@ -1070,7 +1072,7 @@ def rrc(opcode):
     """
     global flags
 
-    carry_out = (registers[0] & 0x01) << 7 # the bit that fell off, also becomes the new Carry
+    carry_out = registers[0] & 0x01 # the bit that fell off, also becomes the new Carry
     result = ((registers[0] >> 1) | carry_out) & 0xFF # shift right, OR the wrapped bit into position 0, then mask to 8 bits
 
     registers[0] = result # Update accumulator
@@ -1111,19 +1113,28 @@ def rar(opcode):
 
 def in_(opcode):
     """
-    Fetch the port number from the immediate byte and store it in the accumulator
+    Fetch the port number from the immediate byte and execute its read handler.
+    Store the result in the accumulator.
     """
-
     immediate_byte = fetch_byte() # Fetch port number
-    registers[0] = ports[immediate_byte] # Store into A
+    
+    if immediate_byte in port_in_handlers:
+        # Execute the hardware callback and store the result in A
+        registers[0] = port_in_handlers[immediate_byte]() 
+    else:
+        # Default value if no hardware is connected to this port
+        registers[0] = 0xFF 
 
 def out(opcode):
     """
-    Fetch the port number from the immediate byte and write the value of A into the corresponding port
+    Fetch the port number from the immediate byte and pass the value of A 
+    into the corresponding write handler.
     """
-
     immediate_byte = fetch_byte() # Fetch port number
-    ports[immediate_byte] = registers[0] # Write to port
+    
+    if immediate_byte in port_out_handlers:
+        # Pass the value in A to the external hardware callback
+        port_out_handlers[immediate_byte](registers[0])
 
 def hlt(opcode):
     """
@@ -1166,7 +1177,7 @@ def xthl(opcode):
 
     low_byte, high_byte = ram[sp], ram[sp + 1] # Read from stack
 
-    ram[sp], ram[sp + 1] = registers[6], registers[5] # Write to stack
+    ram[sp], ram[sp + 1] = registers[6], (registers[5] & 0xFFFF) # Write to stack
 
     registers[6], registers[5] = low_byte, high_byte # Write to registers
 
