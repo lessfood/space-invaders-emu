@@ -2,6 +2,11 @@
 Module for emulating an Intel 8080 CPU
 """
 
+# TODO: each opcode needs an associated cycle-count,
+# and step() should increment the counter by that instead of a flat 1. 
+# store it in a cycles lookup table parallel to dispatch_table,
+# keyed by opcode, same way
+
 ram = bytearray(65536)  # 64KB of RAM
 
 # Map port numbers (0-255) to specific functions
@@ -24,6 +29,9 @@ sp = 0x0000  # Stack Pointer (16-bit); masked & 0xFFFF
 halted = False # Is the CPU halted?
 
 interrupts_enabled = False # self-explanatory
+
+interrupt_pending = False # is an interrupt pending?
+interrupt_vector = 0   # which RST number (0-7) to service
 
 CODE_TO_INDEX = {0b000: 1, 0b001: 2, 0b010: 3, 0b011: 4, 0b100: 5, 0b101: 6, 0b111: 0}
 # This dictionary maps 3-bit register codes to their corresponding indices in the registers array.
@@ -1325,6 +1333,16 @@ def ldax(opcode):
 def nop(opcode):
     pass
 
+def request_interrupt(vector):
+    """
+    Called by the outside world (e.g. the frame timing loop) to request
+    that the CPU service RST `vector` at the next opportunity.
+    """
+    global interrupt_pending, interrupt_vector
+
+    interrupt_pending = True
+    interrupt_vector = vector
+
 
 # <-- Dispatch Table -->
 # so the CPU actually knows what to do lol
@@ -1459,10 +1477,49 @@ print(dispatch_table[0x05].__name__)
 # make cpu go
 def step():
     """
-    Executes one cycle if not halted
+    Executes one CPU cycle
     """
-    global halted
+    global halted, interrupt_pending, interrupts_enabled
+
     if halted:
         return
+
+    if interrupt_pending and interrupts_enabled:
+        # service the interrupt instead of a normal fetch
+        interrupt_pending = False              # clear the pending flag
+        interrupts_enabled = False              # disable further interrupts (re-armed by EI)
+        rst(0xC7 + (interrupt_vector << 3))
+        return
+
     opcode = fetch_byte()
     dispatch_table[opcode](opcode)
+
+def reset_cpu():
+    global ram, ports, registers, flags, pc, sp, halted, interrupts_enabled, interrupt_pending, interrupt_vector
+
+
+    ram = bytearray(65536)  # 64KB of RAM
+
+    ports = bytearray(256) # 256 seperate ports for interacting with actual "hardware" (user input)
+
+    registers = bytearray(7)  # 7 registers: A, B, C, D, E, H, L
+    # pairs: b/c, d/e, h/l
+
+    flags = 0x02 # a single byte (plain int, masked & 0xFF), with bit-level check/set/clear operations at specific positions 
+    # (Sign=7, Zero=6, AC=4, Parity=2, Carry=0)
+    # 8080 quirk, bit 1 is always on
+
+    pc = 0x0000  # Program Counter (16-bit); masked & 0xFFFF
+    # starts at 0x0000, but can be set to any address in the 64KB address space
+
+    sp = 0x0000  # Stack Pointer (16-bit); masked & 0xFFFF
+    # starts at 0x0000 as a placeholder; real programs initialize SP themselves via LXI SP before using the stack
+
+    halted = False # Is the CPU halted?
+
+    interrupts_enabled = False # self-explanatory
+
+    interrupt_pending = False # is an interrupt pending?
+    interrupt_vector = 0   # which RST number (0-7) to service
+
+    print("CPU reset!")
